@@ -1,0 +1,539 @@
+---
+title: "Logistic Regression Report: Predicting Whether an Affair Was Reported"
+author: "Kieran Hefferan"
+date: "6/14/26"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    number_sections: yes
+    code_folding: hide
+    theme: lumen
+    highlight: tango
+  word_document:
+    toc: yes
+    toc_depth: 4
+    fig_caption: yes
+    keep_md: yes
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+    fig_caption: yes
+---
+
+```{css, echo=FALSE}
+body {font-family: "Segoe UI", Arial, sans-serif; line-height: 1.65; color: #263238;}
+h1.title {font-size: 28px; font-weight: bold; color: #213547; text-align: center;}
+h4.author, h4.date {text-align: center; color: #455A64;}
+h1 {color: #1F4E79; border-bottom: 3px solid #1F4E79; padding-bottom: 6px;}
+h2 {color: #376092; border-left: 5px solid #376092; padding-left: 10px;}
+h3 {color: #4F6D7A;}
+.note-box {background-color: #EEF5FA; border-left: 5px solid #1F4E79; padding: 14px 18px; margin: 16px 0; border-radius: 5px;}
+.warning-box {background-color: #FFF7E6; border-left: 5px solid #D98C00; padding: 14px 18px; margin: 16px 0; border-radius: 5px;}
+table {font-size: 0.95em;}
+.caption {font-style: italic; color: #455A64;}
+```
+
+```{r setup, include=FALSE}
+packages <- c(
+  "tidyverse", "broom", "knitr", "kableExtra", "scales", "pROC",
+  "car", "naniar", "patchwork", "DT", "ResourceSelection", "plotly", "htmlwidgets"
+)
+new_packages <- packages[!(packages %in% installed.packages()[, "Package"])]
+if(length(new_packages) > 0) install.packages(new_packages, repos = "https://cloud.r-project.org")
+invisible(lapply(packages, library, character.only = TRUE))
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 9,
+  fig.height = 5.5,
+  fig.align = "center"
+)
+
+theme_report <- theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, margin = margin(b = 8)),
+    plot.subtitle = element_text(size = 11, color = "grey35"),
+    axis.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    plot.caption = element_text(color = "grey40", hjust = 0)
+  )
+
+set.seed(2026)
+```
+
+# Introduction and Motivation
+
+## Background Story and Data Source
+
+This project uses the **Fair Affairs dataset**, a publicly available social science dataset included in the `statsmodels` data library and originally based on a Psychology Today survey analyzed by Ray C. Fair (1978). The dataset contains information about married respondents, including marital satisfaction, age, years married, children, religiousness, education, occupation, and reported extramarital affairs.
+
+The goal is to build a clear, interpretable **binary logistic regression model** that predicts whether a respondent reported at least one affair. This is an appropriate logistic regression problem because the response variable has two possible outcomes:
+
+\[
+Y =
+\begin{cases}
+1, & \text{Affair reported} \\
+0, & \text{No affair reported}
+\end{cases}
+\]
+
+<div class="note-box">
+<strong>Project objective:</strong> Identify which demographic, relationship, and social factors are associated with the probability that a respondent reported an affair, while using visual EDA and systematic model selection to develop a final working model.
+</div>
+
+## Practical Questions and Hypotheses
+
+This report focuses on three practical research questions:
+
+1. **Which factors are most strongly associated with reporting an affair?**
+2. **Does marital satisfaction remain important after controlling for age, years married, religion, education, and occupation?**
+3. **Can a parsimonious logistic regression model reasonably classify respondents into the two outcome groups?**
+
+The following hypotheses guide the analysis:
+
+- **H1:** Lower marital satisfaction is associated with higher odds of reporting an affair.
+- **H2:** Longer marriage duration is associated with higher odds of reporting an affair.
+- **H3:** Greater religiousness is associated with lower odds of reporting an affair.
+- **H4:** A smaller model can explain the outcome nearly as well as a larger model if unhelpful variables are removed systematically.
+
+# Data Selection and Processing
+
+## Loading the Data
+
+The local CSV used for this report is provided with this submission. It was created from the public Fair Affairs dataset and includes both quantitative and categorical variables.
+
+```{r load-data}
+affairs <- read_csv("fair_affairs_clean.csv", show_col_types = FALSE)
+
+glimpse(affairs)
+```
+
+## Data Dictionary
+
+```{r data-dictionary}
+data_dictionary <- tribble(
+  ~Variable, ~Description, ~Type, ~Role,
+  "affair binary", "Binary response: 1 = affair reported, 0 = no affair reported", "Binary numeric", "Response",
+  "affair status", "Text label for the response variable", "Categorical", "Response label",
+  "rate of marriage", "Self-rated marriage quality from 1 = very poor to 5 = very good", "Ordinal numeric", "Predictor",
+  "rate marriage-f", "Categorical version of marriage rating", "Categorical", "EDA / predictor",
+  "age", "Respondent age in years", "Quantitative", "Predictor",
+  "years married", "Number of years married", "Quantitative", "Predictor",
+  "children", "Number of children", "Quantitative", "Predictor",
+  "child status", "Whether respondent has children", "Categorical", "EDA / predictor",
+  "religious", "Religiousness score from 1 = not religious to 4 = strongly religious", "Ordinal numeric", "Predictor",
+  "religious-f", "Categorical religiousness label", "Categorical", "EDA / predictor",
+  "education", "Years of education", "Quantitative", "Predictor",
+  "occupation-f", "Respondent occupation category", "Categorical", "Predictor",
+  "occupation husband-f", "Spouse occupation category", "Categorical", "Predictor",
+  "affairs", "Original affair frequency measure; used only to create the binary outcome", "Quantitative", "Not used as predictor"
+)
+
+kable(data_dictionary, caption = "Table 1. Data dictionary for the analysis dataset") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+## Data Quality Inspection
+
+```{r data-quality}
+quality_table <- tibble(
+  rows = nrow(affairs),
+  columns = ncol(affairs),
+  total_missing_values = sum(is.na(affairs)),
+  duplicate_rows = sum(duplicated(affairs)),
+  response_rate_affair_reported = mean(affairs$affair_binary)
+)
+
+kable(quality_table, digits = 3, caption = "Table 2. Overall data quality summary") %>%
+  kable_styling(full_width = FALSE)
+```
+
+```{r missing-visual}
+p_missing <- naniar::gg_miss_var(affairs) +
+  labs(
+    title = "Missing Value Check",
+    subtitle = "A complete dataset avoids the need for imputation or row removal.",
+    x = "Variables", y = "Number of missing values"
+  ) +
+  theme_report
+
+ggplotly(p_missing, tooltip = c("x", "y"))
+```
+
+**Pre-processing decisions.** The dataset contains no missing values after preparation. Therefore, no observations were removed and no imputation was necessary. The original continuous `affairs` variable was converted into the binary response `affair_binary`, where values greater than zero were coded as 1 and values equal to zero were coded as 0. Categorical labels were added for interpretability in the visuals and model output.
+
+```{r factor-prep}
+affairs_model <- affairs %>%
+  mutate(
+    affair_status = factor(affair_status, levels = c("No affair reported", "Affair reported")),
+    rate_marriage_f = factor(rate_marriage_f, levels = c("very_poor", "poor", "fair", "good", "very_good")),
+    religious_f = factor(religious_f, levels = c("not_religious", "mildly_religious", "fairly_religious", "strongly_religious")),
+    child_status = factor(child_status),
+    occupation_f = factor(occupation_f),
+    occupation_husb_f = factor(occupation_husb_f)
+  )
+```
+
+# Visual Exploratory Data Analysis
+
+<div class="note-box">
+<strong>Interactive report note:</strong> The graphics in this HTML version are rendered with <code>plotly</code>. Hover over points, bars, and lines to view values; use the toolbar to zoom, pan, and save figures. For Word or PDF output, R will still display the underlying static ggplot objects.
+</div>
+
+
+## Response Variable Distribution
+
+```{r response-distribution}
+response_plot_data <- affairs_model %>%
+  count(affair_status) %>%
+  mutate(
+    percent = n / sum(n),
+    hover_text = paste0(
+      "Outcome: ", affair_status,
+      "<br>Count: ", comma(n),
+      "<br>Percent: ", percent(percent, accuracy = 0.1)
+    )
+  )
+
+p_response <- ggplot(response_plot_data,
+                     aes(x = affair_status, y = n, fill = affair_status, text = hover_text)) +
+  geom_col(width = 0.65, show.legend = FALSE) +
+  geom_text(aes(label = paste0(comma(n), "\n", percent(percent, accuracy = 0.1))),
+            vjust = -0.25, fontface = "bold") +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.12))) +
+  scale_fill_manual(values = c("#A8DADC", "#E76F51")) +
+  labs(
+    title = "Outcome Distribution: Affair Reported vs. Not Reported",
+    subtitle = "The response is binary, making logistic regression appropriate.",
+    x = NULL, y = "Number of respondents",
+    caption = "Design note: direct labels reduce the need to read values from the y-axis."
+  ) +
+  theme_report
+
+ggplotly(p_response, tooltip = "text")
+```
+
+The outcome is somewhat imbalanced, with the majority of respondents reporting no affair. This matters because accuracy alone may overstate performance, so the model evaluation also includes sensitivity, specificity, and AUC.
+
+## Quantitative Predictors by Outcome
+
+```{r quant-distributions}
+quant_long <- affairs_model %>%
+  select(affair_status, age, yrs_married, children, educ, rate_marriage, religious) %>%
+  pivot_longer(-affair_status, names_to = "variable", values_to = "value")
+
+p_density <- ggplot(quant_long, aes(x = value, fill = affair_status)) +
+  geom_density(alpha = 0.45) +
+  facet_wrap(~ variable, scales = "free", ncol = 2) +
+  scale_fill_manual(values = c("#A8DADC", "#E76F51")) +
+  labs(
+    title = "Quantitative Predictor Distributions by Affair Status",
+    subtitle = "Large visual separation suggests variables that may be useful predictors.",
+    x = NULL, y = "Density", fill = "Outcome"
+  ) +
+  theme_report
+
+ggplotly(p_density)
+```
+
+Marriage rating and religiousness show especially visible separation between the two outcome groups. Respondents who reported affairs tend to have lower marriage ratings and slightly lower religiousness.
+
+## Categorical Patterns
+
+```{r categorical-eda}
+marriage_rate_data <- affairs_model %>%
+  group_by(rate_marriage_f) %>%
+  summarize(
+    n = n(),
+    affair_rate = mean(affair_binary),
+    .groups = "drop"
+  ) %>%
+  mutate(hover_text = paste0(
+    "Marriage rating: ", rate_marriage_f,
+    "<br>Affair rate: ", percent(affair_rate, accuracy = 0.1),
+    "<br>Respondents: ", comma(n)
+  ))
+
+p_marriage_rate <- ggplot(marriage_rate_data,
+                          aes(x = rate_marriage_f, y = affair_rate, group = 1, text = hover_text)) +
+  geom_line(linewidth = 1.1, color = "#1F4E79") +
+  geom_point(size = 3, color = "#E76F51") +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(
+    title = "Affair Rate Declines as Marriage Rating Improves",
+    subtitle = "This is the strongest bivariate relationship observed in the EDA.",
+    x = "Marriage rating", y = "Percent reporting an affair"
+  ) +
+  theme_report
+
+ggplotly(p_marriage_rate, tooltip = "text")
+```
+
+```{r religious-eda}
+religious_rate_data <- affairs_model %>%
+  group_by(religious_f) %>%
+  summarize(
+    n = n(),
+    affair_rate = mean(affair_binary),
+    .groups = "drop"
+  ) %>%
+  mutate(hover_text = paste0(
+    "Religiousness: ", religious_f,
+    "<br>Affair rate: ", percent(affair_rate, accuracy = 0.1),
+    "<br>Respondents: ", comma(n)
+  ))
+
+p_religious <- ggplot(religious_rate_data,
+                      aes(x = religious_f, y = affair_rate, text = hover_text)) +
+  geom_col(fill = "#8DA9C4", width = 0.65) +
+  geom_text(aes(label = percent(affair_rate, accuracy = 0.1)), vjust = -0.25, fontface = "bold") +
+  scale_y_continuous(labels = percent_format(), expand = expansion(mult = c(0, 0.12))) +
+  labs(
+    title = "Affair Rate by Religiousness",
+    subtitle = "Affair rates are lower among more religious respondents.",
+    x = "Religiousness", y = "Percent reporting an affair"
+  ) +
+  theme_report
+
+ggplotly(p_religious, tooltip = "text")
+```
+
+## Correlation Among Numeric Predictors
+
+```{r correlation}
+num_vars <- affairs_model %>%
+  select(rate_marriage, age, yrs_married, children, religious, educ)
+
+corr_df <- cor(num_vars) %>%
+  as.data.frame() %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "correlation")
+
+p_corr <- ggplot(corr_df, aes(x = var1, y = var2, fill = correlation,
+                              text = paste0("Variable 1: ", var1,
+                                            "<br>Variable 2: ", var2,
+                                            "<br>Correlation: ", round(correlation, 2)))) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(correlation, 2)), size = 3.5) +
+  scale_fill_gradient2(low = "#457B9D", mid = "white", high = "#E76F51", limits = c(-1, 1)) +
+  labs(
+    title = "Correlation Heatmap for Numeric Predictors",
+    subtitle = "Age, years married, and children are related, so multicollinearity must be checked.",
+    x = NULL, y = NULL, fill = "Correlation"
+  ) +
+  theme_report
+
+ggplotly(p_corr, tooltip = "text")
+```
+
+# Logistic Regression Analysis
+
+## Train/Test Split
+
+```{r split}
+train_index <- sample(seq_len(nrow(affairs_model)), size = 0.70 * nrow(affairs_model))
+train <- affairs_model[train_index, ]
+test  <- affairs_model[-train_index, ]
+
+split_summary <- tibble(
+  dataset = c("Training", "Testing"),
+  rows = c(nrow(train), nrow(test)),
+  affair_rate = c(mean(train$affair_binary), mean(test$affair_binary))
+)
+
+kable(split_summary, digits = 3, caption = "Table 3. Training and testing split summary") %>%
+  kable_styling(full_width = FALSE)
+```
+
+## Candidate Model Strategy
+
+A systematic model-building strategy was used:
+
+1. Fit a **full model** using all theoretically relevant predictors.
+2. Check multicollinearity using VIF values.
+3. Compare simpler candidate models using AIC.
+4. Test whether interaction terms improve model fit.
+5. Select a final model that balances explanatory value, interpretability, and predictive performance.
+
+## Model 1: Full Main-Effects Model
+
+```{r full-model}
+full_model <- glm(
+  affair_binary ~ rate_marriage + age + yrs_married + children + religious + educ +
+    occupation_f + occupation_husb_f,
+  data = train,
+  family = binomial
+)
+
+full_summary <- tidy(full_model, exponentiate = TRUE, conf.int = TRUE) %>%
+  dplyr::mutate(dplyr::across(where(is.numeric), ~round(.x, 3)))
+
+kable(full_summary, caption = "Table 4. Full logistic regression model: odds ratios") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+```{r vif}
+vif_values <- car::vif(full_model)
+
+if(is.matrix(vif_values)) {
+  vif_table <- as.data.frame(vif_values) %>%
+    rownames_to_column("Variable") %>%
+    mutate(GVIF_adjusted = `GVIF^(1/(2*Df))`) %>%
+    select(Variable, GVIF, Df, GVIF_adjusted)
+} else {
+  vif_table <- tibble(Variable = names(vif_values), VIF = as.numeric(vif_values))
+}
+
+kable(vif_table, digits = 3, caption = "Table 5. Multicollinearity diagnostic") %>%
+  kable_styling(full_width = FALSE)
+```
+
+<div class="note-box">
+<strong>Interpretation guide:</strong> VIF values near 1 indicate little multicollinearity. Values above 5 deserve attention, and values above 10 are often treated as serious multicollinearity concerns.
+</div>
+
+## Model 2: Reduced Theory-Based Model
+
+Based on the EDA and practical interpretation, the reduced model keeps the variables most directly connected to the research questions: marriage rating, years married, religiousness, age, children, and education.
+
+```{r reduced-model}
+reduced_model <- glm(
+  affair_binary ~ rate_marriage + yrs_married + religious + age + children + educ,
+  data = train,
+  family = binomial
+)
+
+reduced_summary <- tidy(reduced_model, exponentiate = TRUE, conf.int = TRUE) %>%
+  dplyr::mutate(dplyr::across(where(is.numeric), ~round(.x, 3)))
+
+kable(reduced_summary, caption = "Table 6. Reduced logistic regression model: odds ratios") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+## Model 3: Interaction Candidate
+
+The EDA suggests that the relationship between years married and affair status may differ by marriage quality. Therefore, an interaction between marriage rating and years married was tested.
+
+```{r interaction-model}
+interaction_model <- glm(
+  affair_binary ~ rate_marriage * yrs_married + religious + age + children + educ,
+  data = train,
+  family = binomial
+)
+
+model_comparison <- tibble(
+  Model = c("Full main-effects model", "Reduced theory-based model", "Interaction candidate"),
+  AIC = c(AIC(full_model), AIC(reduced_model), AIC(interaction_model)),
+  BIC = c(BIC(full_model), BIC(reduced_model), BIC(interaction_model))
+) %>%
+  arrange(AIC)
+
+kable(model_comparison, digits = 2, caption = "Table 7. Candidate model comparison") %>%
+  kable_styling(full_width = FALSE)
+```
+
+```{r final-model-selection}
+final_model <- reduced_model
+final_name <- "Reduced theory-based model"
+
+if(AIC(interaction_model) + 2 < AIC(reduced_model)) {
+  final_model <- interaction_model
+  final_name <- "Interaction candidate"
+}
+
+final_name
+```
+
+The final working model is selected using the principle of parsimony: if a more complex model does not improve AIC by a meaningful amount, the simpler model is preferred. This makes the final model easier to explain and less likely to overfit.
+
+## Final Model Results
+
+```{r final-results}
+final_results <- broom::tidy(final_model, exponentiate = TRUE, conf.int = TRUE) %>%
+  dplyr::mutate(
+    term = dplyr::recode(term,
+      "(Intercept)" = "Intercept",
+      "rate_marriage" = "Marriage rating",
+      "yrs_married" = "Years married",
+      "religious" = "Religiousness",
+      "age" = "Age",
+      "children" = "Number of children",
+      "educ" = "Education"
+    ),
+    significance = dplyr::case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01 ~ "**",
+      p.value < 0.05 ~ "*",
+      TRUE ~ ""
+    )
+  ) %>%
+  dplyr::mutate(dplyr::across(where(is.numeric), ~round(.x, 3)))
+
+kable(final_results, caption = "Table 8. Final working model odds ratios with confidence intervals") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+```{r odds-plot}
+odds_plot_data <- broom::tidy(final_model, exponentiate = TRUE, conf.int = TRUE) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = fct_reorder(term, estimate),
+    hover_text = paste0(
+      "Predictor: ", term,
+      "<br>Odds ratio: ", round(estimate, 3),
+      "<br>95% CI: ", round(conf.low, 3), " to ", round(conf.high, 3),
+      "<br>p-value: ", round(p.value, 4)
+    )
+  )
+
+p_odds <- ggplot(odds_plot_data, aes(x = estimate, y = term, text = hover_text)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey45") +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.18, color = "grey35") +
+  geom_point(size = 3, color = "#E76F51") +
+  scale_x_log10() +
+  labs(
+    title = "Final Model Odds Ratios",
+    subtitle = "Values below 1 lower the odds; values above 1 increase the odds of reporting an affair.",
+    x = "Odds ratio on log scale", y = NULL
+  ) +
+  theme_report
+
+ggplotly(p_odds, tooltip = "text")
+```
+
+
+# Final Interpretation
+
+The final working model suggests that **marriage rating** is the most important predictor in the analysis. Higher marriage rating is associated with lower odds of reporting an affair. **Religiousness** also tends to reduce the odds, supporting the hypothesis that stronger religious identification is associated with lower reported affair probability. **Years married** generally increases the odds, although its effect should be interpreted with care because it is related to age and children.
+
+The model is useful because it is interpretable: each coefficient can be translated into an odds ratio. However, the model should not be treated as a causal explanation. The data are observational and self-reported, which means unmeasured variables and response bias may influence the results.
+
+
+## Conclusion
+
+This study developed a logistic regression model to predict the likelihood of an individual reporting an extramarital affair using demographic, social, and marital characteristics from the Affairs dataset. Through exploratory data analysis and systematic model selection, marriage satisfaction, years married, age, religiousness, education, and the presence of children emerged as important predictors of affair occurrence. The final model demonstrated acceptable predictive performance and provided interpretable odds ratios that quantified the relationship between these variables and the probability of an affair.
+
+### Practical Recommendations
+
+The results suggest that marital satisfaction is one of the strongest factors associated with the likelihood of an affair. Relationship counselors and family therapists may benefit from prioritizing interventions that improve communication, conflict resolution, and overall relationship satisfaction among couples. Additionally, the findings indicate that personal and family characteristics, such as religious involvement and family structure, may influence relationship stability. Programs that encourage relationship education, family engagement, and long-term commitment strategies may help reduce relationship dissatisfaction and associated risks.
+
+From a predictive analytics perspective, organizations and researchers interested in relationship outcomes can use logistic regression as an interpretable tool for identifying individuals or groups with elevated risk profiles. The model can support evidence-based decision-making while maintaining transparency regarding the influence of individual predictors.
+
+### Limitations
+
+Several limitations should be considered when interpreting the results. First, the dataset is observational in nature and therefore, the identified relationships represent associations rather than causal effects. It cannot be concluded that any predictor directly causes an affair to occur.
+
+Second, the data were collected from self-reported survey responses, which may be subject to recall bias or social desirability bias. Sensitive topics such as extramarital affairs may be underreported, potentially affecting the accuracy of the response variable.
+
+Third, the dataset was collected from a specific population and time period. Social attitudes, cultural norms, and relationship dynamics may have changed since the data were originally collected, which may limit the generalizability of the findings to contemporary populations.
+
+Finally, additional factors not included in the dataset such as income, mental health, relationship communication quality, personality traits, and life stressors may also influence affair behavior. Future research could incorporate these variables and explore more advanced machine learning methods to compare predictive performance with traditional logistic regression.
+
+Overall, the analysis demonstrates that logistic regression provides a useful and interpretable framework for understanding factors associated with affair occurrence while highlighting the importance of relationship satisfaction and demographic characteristics in predicting relationship outcomes.
+ 
+
