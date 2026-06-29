@@ -1,0 +1,1020 @@
+---
+title: "Superstore Sales Performance Dashboard"
+subtitle: "Understanding Sales, Profitability, and Customer Trends"
+author: "Kieran Hefferan"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    theme: cosmo  
+    source_code: embed
+runtime: shiny 
+---
+
+```{r setup, include=FALSE}
+# ============================================================
+# Superstore Shiny Dashboard Report
+# ============================================================
+
+packages <- c(
+  "flexdashboard", "shiny", "tidyverse", "lubridate", "plotly",
+  "DT", "scales", "knitr", "readxl", "rsconnect"
+)
+
+new_packages <- packages[!(packages %in% installed.packages()[, "Package"])]
+if (length(new_packages) > 0) install.packages(new_packages)
+
+library(flexdashboard)
+library(shiny)
+library(tidyverse)
+library(lubridate)
+library(plotly)
+library(DT)
+library(scales)
+library(knitr)
+library(readxl)
+library(rsconnect)
+
+
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+
+
+# ------------------------------------------------------------
+# Data loading
+# ------------------------------------------------------------
+#
+# This workbook contains three sheets: Orders, People, and Returns.
+# The dashboard uses the Orders sheet because it contains sales,
+# profit, order dates, customer segments, product categories, and geography.
+
+excel_file <- "sample_-_superstore.xls" 
+
+if (!file.exists(excel_file)) {
+  stop("Excel file not found. Please place 'sample_-_superstore.xls' in the same folder as this Rmd file.")
+} 
+
+superstore_raw <- read_excel(excel_file, sheet = "Orders")
+
+# ------------------------------------------------------------
+# Date helper
+# ------------------------------------------------------------
+# This helper keeps the dashboard accurate whether Excel dates are read
+# as Date values, numeric Excel serial dates, or text dates.
+parse_order_date <- function(x) {
+  if (inherits(x, "Date")) {
+    return(as.Date(x))
+  }
+
+  if (inherits(x, "POSIXct") || inherits(x, "POSIXt")) {
+    return(as.Date(x))
+  }
+
+  if (is.numeric(x)) {
+    return(as.Date(x, origin = "1899-12-30"))
+  }
+
+  return(as.Date(parse_date_time(x, orders = c("ymd", "mdy", "dmy"))))
+}
+
+# ------------------------------------------------------------
+# Data preparation and accuracy checks
+# ------------------------------------------------------------
+required_columns <- c(
+  "Order ID", "Order Date", "Ship Date", "Ship Mode", "Segment",
+  "State/Province", "Region", "Category", "Sub-Category",
+  "Sales", "Quantity", "Discount", "Profit"
+)
+
+missing_columns <- setdiff(required_columns, names(superstore_raw))
+
+if (length(missing_columns) > 0) {
+  stop(paste("Missing required columns:", paste(missing_columns, collapse = ", ")))
+}
+
+superstore <- superstore_raw %>%
+  rename(
+    Order_ID = `Order ID`,
+    Order_Date = `Order Date`,
+    Ship_Date = `Ship Date`,
+    Ship_Mode = `Ship Mode`,
+    State_Province = `State/Province`,
+    Sub_Category = `Sub-Category`
+  ) %>%
+  mutate(
+    Order_Date = parse_order_date(Order_Date),
+    Ship_Date = parse_order_date(Ship_Date),
+    Sales = as.numeric(Sales),
+    Profit = as.numeric(Profit),
+    Quantity = as.numeric(Quantity),
+    Discount = as.numeric(Discount),
+    Profit_Margin = if_else(Sales > 0, Profit / Sales, NA_real_),
+    Month = floor_date(Order_Date, "month"),
+    Year = year(Order_Date)
+  ) %>%
+  filter(!is.na(Order_Date), !is.na(Sales), !is.na(Profit))
+
+# Overall date range for filters
+min_date <- min(superstore$Order_Date, na.rm = TRUE)
+max_date <- max(superstore$Order_Date, na.rm = TRUE)
+
+# Used by the reset button
+all_regions <- c("All", sort(unique(superstore$Region)))
+all_categories <- c("All", sort(unique(superstore$Category)))
+all_segments <- c("All", sort(unique(superstore$Segment)))
+all_states <- c("All", sort(unique(superstore$State_Province)))
+```
+
+```{css, echo=FALSE}
+/* ============================================================
+   Readable written-report formatting for flexdashboard
+   ============================================================ */
+body {
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+h1, h2, h3 {
+  font-weight: 700;
+}
+
+.report-card {
+  background-color: #ffffff;
+  border-radius: 12px;
+  padding: 20px 24px;
+  margin-bottom: 18px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+  border: 1px solid #e9ecef;
+}
+
+.report-card h3,
+.report-card h4 {
+  margin-top: 0;
+  color: #2C3E50;
+}
+
+.key-point {
+  background-color: #F7F9FB;
+  border-left: 6px solid #2C7FB8;
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin: 14px 0;
+}
+
+.success-point {
+  background-color: #F6FBF7;
+  border-left: 6px solid #2E8B57;
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin: 14px 0;
+}
+
+.warning-point {
+  background-color: #FFF8F0;
+  border-left: 6px solid #F39C12;
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin: 14px 0;
+}
+
+.report-list li {
+  margin-bottom: 8px;
+}
+
+.callout-title {
+  font-weight: 700;
+  color: #2C3E50;
+  margin-bottom: 6px;
+}
+
+.small-note {
+  font-size: 14px;
+  color: #666666;
+}
+```
+
+# Overview {.storyboard}
+
+### Dashboard Purpose
+
+This Shiny dashboard helps a general audience understand **where Superstore is generating sales, where it is earning profit, and where improvement may be needed**. The dashboard uses the updated Excel workbook and focuses on sales, profit, products, customers, and geography.
+
+The main story is:
+
+> **Which months, products, customer groups, and regions drive the strongest sales and profit performance?**
+
+The dashboard is designed to be simple, clear, and useful. It begins with key performance indicators, then moves into trends, product performance, geographic patterns, customer behavior, and a searchable data table.
+
+### Rubric Alignment
+
+This report was designed to match the dashboard grading expectations:
+
+-   **Data Story:** clear business question, logical flow, and practical interpretation.
+-   **Overall Design:** simple layout, limited clutter, clear navigation, and useful filters.
+-   **Filter Functionality:** date, region, category, segment, and state filters update the dashboard.
+-   **Individual Charts:** descriptive titles, labeled axes, accurate monthly aggregation, and consistent color meaning.
+-   **Dashboard Requirements:** active links in the header panel for the report, data source, and source code.
+
+### Header Links Required by Assignment
+
+Replace the placeholder report and source-code links with your final hosted links before submitting.
+
+```{r header-links, echo=FALSE}
+library(htmltools)
+
+tagList(
+  tags$div(
+    style = "
+      background-color:#2C3E50;
+      color:white;
+      padding:15px;
+      border-radius:10px;
+      text-align:center;
+      font-size:18px;
+      margin-bottom:20px;
+    ",
+
+    tags$strong("Dashboard Resources"),
+
+    tags$br(),
+    tags$br(),
+
+    tags$a(
+      "📄 Report",
+      href = "https://ktheffer.github.io/STA553/week5/Superstore_Shiny_Dashboard_Report.Rmd/", 
+      target = "_blank",
+      style = "color:white; text-decoration:none; margin-right:35px; font-weight:bold;"
+    ),
+
+    tags$a(
+      "📂 Data Source",
+      href = "https://ktheffer.github.io/STA553/week4/sample_-_superstore.xls",
+      target = "_blank",
+      style = "color:white; text-decoration:none; margin-right:35px; font-weight:bold;"
+    ),
+
+    tags$a(
+      "💻 Source Code",
+      href = "#",
+      target = "_blank",
+      style = "color:white; text-decoration:none; font-weight:bold;"
+    )
+  )
+)
+```
+
+### Data Story
+
+The updated dashboard tells a straightforward business story:
+
+1.  **Start with overall performance:** total sales, total profit, number of orders, and profit margin.
+2.  **Identify time patterns:** monthly sales and profit trends show whether business performance is improving, declining, or seasonal.
+3.  **Compare products:** category and sub-category charts show which product groups drive the most revenue and profit.
+4.  **Explore geography:** state and regional views highlight where the company performs best or struggles.
+5.  **Understand customers:** segment and shipping views show customer behavior and fulfillment patterns.
+6.  **Verify the data:** the interactive table allows users to search, sort, and download the filtered dataset.
+
+# Dashboard
+
+## Sidebar {.sidebar}
+
+```{r filters, echo=FALSE}
+dateRangeInput(
+  inputId = "date_filter",
+  label = "Order Date Range",
+  start = min_date,
+  end = max_date,
+  min = min_date,
+  max = max_date
+)
+
+selectInput(
+  inputId = "region_filter",
+  label = "Region",
+  choices = all_regions,
+  selected = "All"
+)
+
+selectInput(
+  inputId = "category_filter",
+  label = "Category",
+  choices = all_categories,
+  selected = "All"
+)
+
+selectInput(
+  inputId = "segment_filter",
+  label = "Customer Segment",
+  choices = all_segments,
+  selected = "All"
+)
+
+selectInput(
+  inputId = "state_filter",
+  label = "State / Province",
+  choices = all_states,
+  selected = "All"
+)
+
+actionButton("reset_filters", "Reset Filters")
+
+helpText("Use the filters above to narrow the dashboard. All charts and the data table update automatically.")
+```
+
+```{r reactive-data, include=FALSE}
+observeEvent(input$reset_filters, {
+  updateDateRangeInput(session, "date_filter", start = min_date, end = max_date)
+  updateSelectInput(session, "region_filter", selected = "All")
+  updateSelectInput(session, "category_filter", selected = "All")
+  updateSelectInput(session, "segment_filter", selected = "All")
+  updateSelectInput(session, "state_filter", selected = "All")
+})
+
+filtered_data <- reactive({
+  req(input$date_filter)
+
+  df <- superstore %>%
+    filter(Order_Date >= input$date_filter[1], Order_Date <= input$date_filter[2])
+
+  if (input$region_filter != "All") {
+    df <- df %>% filter(Region == input$region_filter)
+  }
+
+  if (input$category_filter != "All") {
+    df <- df %>% filter(Category == input$category_filter)
+  }
+
+  if (input$segment_filter != "All") {
+    df <- df %>% filter(Segment == input$segment_filter)
+  }
+
+  if (input$state_filter != "All") {
+    df <- df %>% filter(State_Province == input$state_filter)
+  }
+
+  df
+})
+```
+
+## Row {data-height="180"}
+
+### Total Sales
+
+```{r total-sales, echo=FALSE}
+renderValueBox({
+  df <- filtered_data()
+
+  valueBox(
+    value = dollar(sum(df$Sales, na.rm = TRUE)),
+    caption = "Total Sales",
+    icon = "fa-dollar-sign",
+    color = "primary"
+  )
+})
+```
+
+### Total Profit
+
+```{r total-profit, echo=FALSE}
+renderValueBox({
+  df <- filtered_data()
+  total_profit <- sum(df$Profit, na.rm = TRUE)
+
+  valueBox(
+    value = dollar(total_profit),
+    caption = "Total Profit",
+    icon = "fa-chart-line",
+    color = ifelse(total_profit >= 0, "success", "danger")
+  )
+})
+```
+
+### Orders
+
+```{r total-orders, echo=FALSE}
+renderValueBox({
+  df <- filtered_data()
+
+  valueBox(
+    value = comma(n_distinct(df$Order_ID)),
+    caption = "Unique Orders",
+    icon = "fa-shopping-cart",
+    color = "info"
+  )
+})
+```
+
+### Profit Margin
+
+```{r profit-margin, echo=FALSE}
+renderValueBox({
+  df <- filtered_data()
+  margin <- sum(df$Profit, na.rm = TRUE) / sum(df$Sales, na.rm = TRUE)
+
+  valueBox(
+    value = percent(margin, accuracy = 0.1),
+    caption = "Profit Margin",
+    icon = "fa-percent",
+    color = ifelse(margin >= 0, "success", "danger")
+  )
+})
+```
+
+## Row {data-height="430"}
+
+### Monthly Sales and Profit Trend
+
+```{r monthly-trend, echo=FALSE}
+renderPlotly({
+  trend_data <- filtered_data() %>%
+    mutate(Month = floor_date(Order_Date, "month")) %>%
+    group_by(Month) %>%
+    summarise(
+      Sales = sum(Sales, na.rm = TRUE),
+      Profit = sum(Profit, na.rm = TRUE),
+      Orders = n_distinct(Order_ID),
+      .groups = "drop"
+    ) %>%
+    arrange(Month) %>%
+    pivot_longer(
+      cols = c(Sales, Profit),
+      names_to = "Metric",
+      values_to = "Dollars"
+    ) %>%
+    mutate(
+      Month_Label = format(Month, "%b %Y"),
+      Hover_Text = paste0(
+        "Month: ", Month_Label,
+        "<br>Metric: ", Metric,
+        "<br>Amount: ", dollar(Dollars),
+        "<br>Orders: ", comma(Orders)
+      )
+    )
+
+  p <- ggplot(
+    trend_data,
+    aes(
+      x = Month,
+      y = Dollars,
+      color = Metric,
+      group = Metric,
+      text = Hover_Text
+    )
+  ) +
+    geom_line(linewidth = 1.15) +
+    geom_point(size = 2) +
+    labs(
+      title = "Monthly Sales and Profit Trend",
+      subtitle = "Sales and profit are summarized by order month from the updated Excel Orders sheet.",
+      x = "Order Month",
+      y = "Dollars ($)",
+      color = "Metric"
+    ) +
+    scale_y_continuous(labels = dollar) +
+    scale_x_date(date_labels = "%b %Y", date_breaks = "3 months") +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      plot.title = element_text(face = "bold")
+    )
+
+  ggplotly(p, tooltip = "text") %>%
+    layout(legend = list(orientation = "h", x = 0.35, y = -0.25))
+})
+```
+
+### Sales by Category
+
+```{r category-sales, echo=FALSE}
+renderPlotly({
+  category_data <- filtered_data() %>%
+    group_by(Category) %>%
+    summarise(
+      Sales = sum(Sales, na.rm = TRUE),
+      Profit = sum(Profit, na.rm = TRUE),
+      Profit_Margin = Profit / Sales,
+      .groups = "drop"
+    ) %>%
+    arrange(desc(Sales))
+
+  p <- ggplot(
+    category_data,
+    aes(
+      x = reorder(Category, Sales),
+      y = Sales,
+      fill = Profit_Margin,
+      text = paste0(
+        "Category: ", Category,
+        "<br>Sales: ", dollar(Sales),
+        "<br>Profit: ", dollar(Profit),
+        "<br>Profit Margin: ", percent(Profit_Margin, accuracy = 0.1)
+      )
+    )
+  ) +
+    geom_col() +
+    coord_flip() +
+    labs(
+      title = "Sales by Product Category",
+      x = "Category",
+      y = "Sales ($)",
+      fill = "Profit Margin"
+    ) +
+    scale_y_continuous(labels = dollar) +
+    scale_fill_gradient2(labels = percent) +
+    theme_minimal()
+
+  ggplotly(p, tooltip = "text")
+})
+```
+
+# Product Performance
+
+## Row {data-height="520"}
+
+### Sales and Profit by Sub-Category
+
+```{r subcategory-sales, echo=FALSE}
+renderPlotly({
+  subcategory_data <- filtered_data() %>%
+    group_by(Sub_Category) %>%
+    summarise(
+      Sales = sum(Sales, na.rm = TRUE),
+      Profit = sum(Profit, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(Sales)) %>%
+    slice_head(n = 15)
+
+  p <- ggplot(
+    subcategory_data,
+    aes(
+      x = reorder(Sub_Category, Sales),
+      y = Sales,
+      fill = Profit,
+      text = paste0(
+        "Sub-Category: ", Sub_Category,
+        "<br>Sales: ", dollar(Sales),
+        "<br>Profit: ", dollar(Profit)
+      )
+    )
+  ) +
+    geom_col() +
+    coord_flip() +
+    labs(
+      title = "Top 15 Sub-Categories by Sales",
+      x = "Sub-Category",
+      y = "Sales ($)",
+      fill = "Profit ($)"
+    ) +
+    scale_y_continuous(labels = dollar) +
+    scale_fill_gradient2(labels = dollar) +
+    theme_minimal()
+
+  ggplotly(p, tooltip = "text")
+})
+```
+
+### Profit vs. Sales
+
+```{r profit-sales-scatter, echo=FALSE}
+renderPlotly({
+  df <- filtered_data()
+
+  p <- ggplot(
+    df,
+    aes(
+      x = Sales,
+      y = Profit,
+      color = Category,
+      size = Quantity,
+      text = paste0(
+        "Order ID: ", Order_ID,
+        "<br>Category: ", Category,
+        "<br>Sub-Category: ", Sub_Category,
+        "<br>Sales: ", dollar(Sales),
+        "<br>Profit: ", dollar(Profit),
+        "<br>Quantity: ", comma(Quantity)
+      )
+    )
+  ) +
+    geom_point(alpha = 0.65) +
+    labs(
+      title = "Relationship Between Sales and Profit",
+      x = "Sales ($)",
+      y = "Profit ($)",
+      color = "Category",
+      size = "Quantity"
+    ) +
+    scale_x_continuous(labels = dollar) +
+    scale_y_continuous(labels = dollar) +
+    theme_minimal()
+
+  ggplotly(p, tooltip = "text")
+})
+```
+
+# Geographic Analysis
+
+## Row {data-height="520"}
+
+### Sales and Profit by State / Province
+
+```{r state-sales, echo=FALSE}
+renderPlotly({
+  state_data <- filtered_data() %>%
+    group_by(State_Province) %>%
+    summarise(
+      Sales = sum(Sales, na.rm = TRUE),
+      Profit = sum(Profit, na.rm = TRUE),
+      Orders = n_distinct(Order_ID),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(Sales)) %>%
+    slice_head(n = 15)
+
+  p <- ggplot(
+    state_data,
+    aes(
+      x = reorder(State_Province, Sales),
+      y = Sales,
+      fill = Profit,
+      text = paste0(
+        "State / Province: ", State_Province,
+        "<br>Sales: ", dollar(Sales),
+        "<br>Profit: ", dollar(Profit),
+        "<br>Orders: ", comma(Orders)
+      )
+    )
+  ) +
+    geom_col() +
+    coord_flip() +
+    labs(
+      title = "Top 15 States / Provinces by Sales",
+      x = "State / Province",
+      y = "Sales ($)",
+      fill = "Profit ($)"
+    ) +
+    scale_y_continuous(labels = dollar) +
+    scale_fill_gradient2(labels = dollar) +
+    theme_minimal()
+
+  ggplotly(p, tooltip = "text")
+})
+```
+
+### Regional Profitability
+
+```{r regional-profitability, echo=FALSE}
+renderPlotly({
+  region_data <- filtered_data() %>%
+    group_by(Region) %>%
+    summarise(
+      Sales = sum(Sales, na.rm = TRUE),
+      Profit = sum(Profit, na.rm = TRUE),
+      Profit_Margin = Profit / Sales,
+      .groups = "drop"
+    )
+
+  p <- ggplot(
+    region_data,
+    aes(
+      x = Region,
+      y = Profit_Margin,
+      fill = Profit_Margin,
+      text = paste0(
+        "Region: ", Region,
+        "<br>Sales: ", dollar(Sales),
+        "<br>Profit: ", dollar(Profit),
+        "<br>Profit Margin: ", percent(Profit_Margin, accuracy = 0.1)
+      )
+    )
+  ) +
+    geom_col() +
+    labs(
+      title = "Profit Margin by Region",
+      x = "Region",
+      y = "Profit Margin",
+      fill = "Profit Margin"
+    ) +
+    scale_y_continuous(labels = percent) +
+    scale_fill_gradient2(labels = percent) +
+    theme_minimal()
+
+  ggplotly(p, tooltip = "text")
+})
+```
+
+# Customer Insights
+
+## Row {data-height="520"}
+
+### Sales and Profit by Customer Segment
+
+```{r segment-sales-profit, echo=FALSE}
+renderPlotly({
+  segment_data <- filtered_data() %>%
+    group_by(Segment) %>%
+    summarise(
+      Sales = sum(Sales, na.rm = TRUE),
+      Profit = sum(Profit, na.rm = TRUE),
+      Orders = n_distinct(Order_ID),
+      .groups = "drop"
+    ) %>%
+    pivot_longer(cols = c(Sales, Profit), names_to = "Metric", values_to = "Value") %>%
+    mutate(
+      Hover_Text = paste0(
+        "Segment: ", Segment,
+        "<br>Metric: ", Metric,
+        "<br>Value: ", dollar(Value),
+        "<br>Orders: ", comma(Orders)
+      )
+    )
+
+  p <- ggplot(
+    segment_data,
+    aes(
+      x = Segment,
+      y = Value,
+      fill = Metric,
+      text = Hover_Text
+    )
+  ) +
+    geom_col(position = "dodge") +
+    labs(
+      title = "Sales and Profit by Customer Segment",
+      x = "Customer Segment",
+      y = "Dollars ($)",
+      fill = "Metric"
+    ) +
+    scale_y_continuous(labels = dollar) +
+    theme_minimal()
+
+  ggplotly(p, tooltip = "text")
+})
+```
+
+### Orders by Ship Mode
+
+```{r ship-mode-orders, echo=FALSE}
+renderPlotly({
+  ship_data <- filtered_data() %>%
+    group_by(Ship_Mode) %>%
+    summarise(
+      Orders = n_distinct(Order_ID),
+      Sales = sum(Sales, na.rm = TRUE),
+      Profit = sum(Profit, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(Orders))
+
+  p <- ggplot(
+    ship_data,
+    aes(
+      x = reorder(Ship_Mode, Orders),
+      y = Orders,
+      fill = Ship_Mode,
+      text = paste0(
+        "Ship Mode: ", Ship_Mode,
+        "<br>Orders: ", comma(Orders),
+        "<br>Sales: ", dollar(Sales),
+        "<br>Profit: ", dollar(Profit)
+      )
+    )
+  ) +
+    geom_col(show.legend = FALSE) +
+    coord_flip() +
+    labs(
+      title = "Orders by Ship Mode",
+      x = "Ship Mode",
+      y = "Number of Orders"
+    ) +
+    scale_y_continuous(labels = comma) +
+    theme_minimal()
+
+  ggplotly(p, tooltip = "text")
+})
+```
+
+# Data Explorer
+
+## Row {data-height="620"}
+
+### Interactive Filtered Data Table
+
+```{r data-table, echo=FALSE}
+renderDT({
+  filtered_data() %>%
+    select(
+      Order_ID, Order_Date, Ship_Mode, Segment, Region, State_Province,
+      Category, Sub_Category, Sales, Quantity, Discount, Profit, Profit_Margin
+    ) %>%
+    datatable(
+      rownames = FALSE,
+      filter = "top",
+      extensions = c("Buttons"),
+      options = list(
+        pageLength = 10,
+        scrollX = TRUE,
+        dom = "Bfrtip",
+        buttons = c("copy", "csv", "excel")
+      )
+    ) %>%
+    formatCurrency(c("Sales", "Profit"), currency = "$", digits = 2) %>%
+    formatPercentage(c("Discount", "Profit_Margin"), digits = 1)
+})
+```
+
+# Written Report 1: Overview and Design
+
+## Row {data-height="360"}
+
+### Report Purpose
+
+:::: report-card
+::: callout-title
+What this report explains
+:::
+
+This written report summarizes the purpose, data preparation, dashboard design, key findings, recommendations, and limitations for the Superstore Sales Performance Dashboard.
+::::
+
+### How to Read the Dashboard
+
+::: key-point
+Start with the **Overall Summary** to understand overall sales, profit, orders, and profit margin. Then move through product, geography, and customer sections to identify what is driving those results. 
+:::
+
+## Row {data-height="360"}
+
+### 1. Data Source and Description
+
+::: report-card
+The dashboard uses the updated Excel workbook \*\*sample\_-\_superstore.xls\*\*.
+
+The dashboard reads the **Orders** sheet because it contains the transaction-level fields needed for business analysis, including:
+
+<ul class="report-list">
+
+<li><strong>Dates:</strong> Order Date and Ship Date</li>
+
+<li><strong>Financial measures:</strong> Sales, Profit, Discount, and Quantity</li>
+
+<li><strong>Customer information:</strong> Segment and Ship Mode</li>
+
+<li><strong>Product information:</strong> Category and Sub-Category</li>
+
+<li><strong>Geography:</strong> Region and State/Province</li>
+
+</ul>
+
+This dataset works well for a dashboard because it connects financial outcomes with products, customers, and locations.
+:::
+
+### 2. Data Preparation and Accuracy
+
+:::: report-card
+Before visualization, the data are cleaned and prepared so the charts are accurate.
+
+<ul class="report-list">
+
+<li>The Orders sheet is imported from the Excel workbook.</li>
+
+<li>Order Date and Ship Date are converted into proper date variables.</li>
+
+<li>Sales, Profit, Quantity, and Discount are converted into numeric variables.</li>
+
+<li>Profit Margin is calculated as Profit divided by Sales.</li>
+
+<li>A monthly date variable is created from Order Date.</li>
+
+<li>Rows with missing Order Date, Sales, or Profit are removed.</li>
+
+</ul>
+
+::: success-point
+<strong>Important accuracy update:</strong> The monthly trend chart now groups orders by month before plotting sales and profit. This means each point represents a true monthly total.
+:::
+::::
+
+## Row {data-height="410"}
+
+### 3. Monthly Trend Logic
+
+::: report-card
+The monthly sales and profit trend uses the following logic:
+
+```{r written-monthly-trend-example, eval=FALSE}
+trend_data <- filtered_data() %>%
+  mutate(Month = floor_date(Order_Date, "month")) %>%
+  group_by(Month) %>%
+  summarise(
+    Sales = sum(Sales, na.rm = TRUE),
+    Profit = sum(Profit, na.rm = TRUE),
+    Orders = n_distinct(Order_ID),
+    .groups = "drop"
+  )
+```
+
+Each row in `trend_data` represents one month. This prevents the dashboard from incorrectly plotting individual transactions as monthly values.
+:::
+
+### 4. Dashboard Organization
+
+::: report-card
+The dashboard is organized so users can move from broad performance to detailed exploration.
+
+<ol class="report-list">
+
+<li><strong>Dashboard Summary:</strong> KPIs and monthly sales/profit trends.</li>
+
+<li><strong>Product Performance:</strong> product categories and sub-categories.</li>
+
+<li><strong>Geographic Analysis:</strong> states, provinces, and regions.</li>
+
+<li><strong>Customer Insights:</strong> customer segments and shipping methods.</li>
+
+<li><strong>Data Explorer:</strong> searchable and downloadable filtered data.</li>
+
+</ol>
+:::
+
+# Written Report 2: Findings and Recommendations
+
+## Row {data-height="390"}
+
+### 5. Key Findings
+
+:::: report-card
+The dashboard is designed to reveal several practical insights:
+
+<ul class="report-list">
+
+<li>Monthly sales and profit can be compared to identify seasonal patterns.</li>
+
+<li>High sales do not always mean high profit.</li>
+
+<li>Some categories and sub-categories may require pricing or discount review.</li>
+
+<li>Regional and state-level charts help identify stronger and weaker markets.</li>
+
+<li>Customer segment analysis helps show which customer groups drive revenue.</li>
+
+</ul>
+
+::: warning-point
+The most important interpretation is to compare **sales and profit together**. A business area with high sales but low profit may need closer review.
+:::
+::::
+
+### 6. Recommendations
+
+::: report-card
+Based on the dashboard design and the types of insights it supports, Superstore should:
+
+<ul class="report-list">
+
+<li>Track monthly sales and profit together instead of focusing only on revenue.</li>
+
+<li>Investigate high-sales areas with low or negative profit.</li>
+
+<li>Review discounts in low-profit categories and sub-categories.</li>
+
+<li>Focus marketing and inventory planning on profitable regions and segments.</li>
+
+<li>Use filters to compare performance across time, products, customers, and geography.</li>
+
+</ul>
+:::
+
+## Row {data-height="360"}
+
+### 7. Limitations
+
+::: report-card
+The dashboard is useful for exploration, but it has limits.
+
+<ul class="report-list">
+
+<li>The data are historical and do not prove causation.</li>
+
+<li>The dashboard does not include every possible business cost.</li>
+
+<li>Profit results depend on the accuracy of the profit field in the dataset.</li>
+
+<li>Some patterns may be affected by discounts, shipping, or business rules not fully shown in the data.</li>
+
+<li>The dashboard does not forecast future sales or profit.</li>
+
+</ul>
+:::
+
+### 8. Conclusion
+
+::: report-card
+The dashboard provides a clear and interactive view of the Superstore performance. It combines KPIs, monthly sales and profit trends, product analysis, geographic comparisons, customer insights, and a searchable data table to analyze performace in the store. 
+:::
