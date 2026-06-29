@@ -1,0 +1,292 @@
+---
+title: "Superstore Report"
+author: "Kieran Hefferan"
+date: "2026-06-28" 
+output: html_document
+---
+```{css, echo=FALSE}
+body {
+  background-color: #f4f6f8;
+  color: #2c3e50;
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+h1 {
+  color: #1f3a5f;
+  font-weight: 800;
+  border-bottom: 3px solid #2c7fb8;
+  padding-bottom: 10px;
+  margin-top: 30px;
+}
+
+h2 {
+  color: #2c3e50;
+  font-weight: 700;
+  margin-top: 25px;
+}
+
+h3 {
+  color: #1f3a5f;
+  font-weight: 700;
+}
+
+.report-card {
+  background: #ffffff;
+  border-radius: 14px;
+  padding: 20px 24px;
+  margin-bottom: 20px;
+  border-left: 6px solid #2c7fb8;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
+}
+
+.callout-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: #1f3a5f;
+  margin-bottom: 10px;
+}
+
+.key-point {
+  background: #eaf4fb;
+  border-left: 6px solid #2c7fb8;
+  padding: 16px 20px;
+  border-radius: 10px;
+  margin-bottom: 20px;
+}
+
+.success-point {
+  background: #eaf7ef;
+  border-left: 6px solid #2e8b57;
+  padding: 14px 18px;
+  border-radius: 10px;
+  margin-top: 15px;
+}
+
+.warning-point {
+  background: #fff4e6;
+  border-left: 6px solid #f39c12;
+  padding: 14px 18px;
+  border-radius: 10px;
+  margin-top: 15px;
+}
+
+.report-list {
+  margin-top: 10px;
+  padding-left: 22px;
+}
+
+.report-list li {
+  margin-bottom: 8px;
+}
+
+pre {
+  background-color: #f8f9fa;
+  border-radius: 10px;
+  padding: 14px;
+  border: 1px solid #ddd;
+}
+
+code {
+  color: #1f3a5f;
+  background-color: #eef3f7;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+a {
+  color: #2c7fb8;
+  font-weight: 600;
+}
+
+a:hover {
+  color: #1f3a5f;
+  text-decoration: underline;
+}
+```
+
+
+# Written Report: Overview and Design
+
+
+### Report Purpose
+
+:::: report-card
+::: callout-title
+What this report explains:
+:::
+
+This written report summarizes the purpose, data preparation, dashboard design, key findings, recommendations, and limitations for the Superstore Sales Performance Dashboard.
+::::
+
+### How to Read the Dashboard
+
+::: key-point
+Start with the **Overall Summary** to understand overall sales, profit, orders, and profit margin. Then move through product, geography, and customer sections to identify what is driving those results. 
+:::
+
+
+### 1. Data Source and Description
+
+::: report-card
+The dashboard uses the Excel workbook \*\*sample\_-\_superstore.xls\*\* from Tableau.
+
+The dashboard reads the **Orders** sheet because it contains the transaction-level fields needed for business analysis, including:
+
+<ul class="report-list">
+
+<li><strong>Dates:</strong> Order Date and Ship Date</li>
+
+<li><strong>Financial measures:</strong> Sales, Profit, Discount, and Quantity</li>
+
+<li><strong>Customer information:</strong> Segment and Ship Mode</li>
+
+<li><strong>Product information:</strong> Category and Sub-Category</li>
+
+<li><strong>Geography:</strong> Region and State/Province</li>
+
+</ul>
+
+This dataset works well for a dashboard because it connects financial outcomes with products, customers, and locations.
+:::
+
+### 2. Data Preparation and Accuracy
+
+:::: report-card
+Before visualization, the data is cleaned and prepared so the charts are accurate.
+
+<ul class="report-list">
+
+<li>The Orders sheet is imported from the Excel workbook.</li>
+
+<li>Order Date and Ship Date are converted into proper date variables.</li>
+
+<li>Sales, Profit, Quantity, and Discount are converted into numeric variables.</li>
+
+<li>Profit Margin is calculated as Profit divided by Sales.</li>
+
+<li>A monthly date variable is created from Order Date.</li>
+
+<li>Rows with missing Order Date, Sales, or Profit are removed.</li>
+
+</ul>
+
+::: success-point
+<strong>Important accuracy update:</strong> The monthly trend chart now groups orders by month before plotting sales and profit. This means each point represents a true monthly total.
+:::
+::::
+
+
+### 3. Monthly Trend Logic
+
+::: report-card
+The monthly sales and profit trend uses the following logic:
+
+```{r written-monthly-trend-example, eval=FALSE}
+trend_data <- filtered_data() %>%
+  mutate(Month = floor_date(Order_Date, "month")) %>%
+  group_by(Month) %>%
+  summarise(
+    Sales = sum(Sales, na.rm = TRUE),
+    Profit = sum(Profit, na.rm = TRUE),
+    Orders = n_distinct(Order_ID),
+    .groups = "drop"
+  )
+```
+
+Each row in `trend_data` represents one month. This prevents the dashboard from incorrectly plotting individual transactions as monthly values.
+:::
+
+### 4. Dashboard Organization
+
+::: report-card
+The dashboard is organized so users can move from broad performance to detailed exploration.
+
+<ol class="report-list">
+
+<li><strong>Dashboard Summary:</strong> KPIs and monthly sales/profit trends.</li>
+
+<li><strong>Product Performance:</strong> product categories and sub-categories.</li>
+
+<li><strong>Geographic Analysis:</strong> states, provinces, and regions.</li>
+
+<li><strong>Customer Insights:</strong> customer segments and shipping methods.</li>
+
+<li><strong>Data Explorer:</strong> searchable and downloadable filtered data.</li>
+
+</ol>
+:::
+
+# Findings and Recommendations
+
+
+### 5. Key Findings
+
+:::: report-card
+The dashboard is designed to reveal several practical insights:
+
+<ul class="report-list">
+
+<li>Monthly sales and profit can be compared to identify seasonal patterns.</li>
+
+<li>High sales do not always mean high profit.</li>
+
+<li>Some categories and sub-categories may require pricing or discount review.</li>
+
+<li>Regional and state-level charts help identify stronger and weaker markets.</li>
+
+<li>Customer segment analysis helps show which customer groups drive revenue.</li>
+
+</ul>
+
+::: warning-point
+The most important interpretation is to compare **sales and profit together**. A business area with high sales but low profit may need closer review.
+:::
+::::
+
+### 6. Recommendations
+
+::: report-card
+Based on the dashboard design and the types of insights it supports, Superstore should:
+
+<ul class="report-list">
+
+<li>Track monthly sales and profit together instead of focusing only on revenue.</li>
+
+<li>Investigate high-sales areas with low or negative profit.</li>
+
+<li>Review discounts in low-profit categories and sub-categories.</li>
+
+<li>Focus marketing and inventory planning on profitable regions and segments.</li>
+
+<li>Use filters to compare performance across time, products, customers, and geography.</li>
+
+</ul>
+:::
+
+
+### 7. Limitations
+
+::: report-card
+The dashboard is useful for exploration, but it has limits.
+
+<ul class="report-list">
+
+<li>The data are historical and do not prove causation.</li>
+
+<li>The dashboard does not include every possible business cost.</li>
+
+<li>Profit results depend on the accuracy of the profit field in the dataset.</li>
+
+<li>Some patterns may be affected by discounts, shipping, or business rules not fully shown in the data.</li>
+
+<li>The dashboard does not forecast future sales or profit.</li>
+
+</ul>
+:::
+
+### 8. Conclusion 
+
+::: report-card
+The dashboard provides a clear and interactive view of the Superstore performance. It combines KPIs, monthly sales and profit trends, product analysis, geographic comparisons, customer insights, and a searchable data table to analyze performance in the store. 
+::: 
